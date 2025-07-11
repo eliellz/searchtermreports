@@ -141,14 +141,18 @@ with st.expander("🔐 Step 1: Canvas Credentials & Term Selection", expanded=no
 
     if canvas_domain and api_token and account_id:
         if st.button("🚀 Load Canvas Terms"):
-            terms, _ = _load_from_file_cache(TERMS_CACHE_FILE)
-            if not terms:
+            try:
                 url = f"{base_url}/api/v1/accounts/{account_id}/terms?per_page=100"
                 terms = _paginated_get_from_api(url, headers)
-                _save_to_file_cache(TERMS_CACHE_FILE, terms)
-            st.session_state.fetched_terms = terms
-            st.session_state.data_loaded_and_terms_fetched = True
-            st.session_state.credentials_collapsed = True
-            st.rerun()
+                if not terms:
+                    st.error("No terms returned from Canvas. Check credentials and account ID.")
+                else:
+                    _save_to_file_cache(TERMS_CACHE_FILE, terms)
+                    st.session_state.fetched_terms = terms
+                    st.session_state.data_loaded_and_terms_fetched = True
+                    st.session_state.credentials_collapsed = True
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error loading Canvas terms: {e}")
 
 # --- The rest of your term logic continues here as before (unchanged) ---
