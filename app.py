@@ -6,6 +6,9 @@ import logging
 import os
 import pickle
 
+if "trigger_apply" not in st.session_state:
+    st.session_state["trigger_apply"] = False
+
 # --- Configuration ---
 CACHE_DIR = ".canvas_cache"
 TERMS_CACHE_FILE = os.path.join(CACHE_DIR, "terms.pkl")
@@ -82,56 +85,70 @@ def _save_to_file_cache(filepath: str, data: list[dict]):
     with open(filepath, 'wb') as f:
         pickle.dump((data, datetime.now()), f)
 
-# --- Sidebar: Course ID Search Tool ---
-st.sidebar.subheader("🔎 Search Any Course by ID")
-search_domain = st.sidebar.text_input("Canvas Domain", placeholder="yourdomain.instructure.com", key="search_domain")
-search_token = st.sidebar.text_input("API Token", type="password", key="search_token")
-search_course_id = st.sidebar.text_input("Course ID", placeholder="e.g., 12345", key="search_course_id")
+# --- Step 1: Credentials & Term Selection ---
+with st.expander("🔐 Step 1: Canvas Credentials & Term Selection", expanded=not st.session_state.credentials_collapsed):
+    st.header("Canvas Credentials")
+    canvas_domain = st.text_input("Canvas Domain", placeholder="yourdomain.instructure.com")
+    api_token = st.text_input("Canvas API Token", type="password")
+    account_id = st.text_input("Canvas Account ID", placeholder="1")
 
-if search_domain and search_token and search_course_id:
-    headers = {"Authorization": f"Bearer {search_token}"}
-    base_url = f"https://{search_domain}"
-    url = f"{base_url}/api/v1/courses/{search_course_id.strip()}"
-    resp = requests.get(url, headers=headers)
-    if resp.status_code == 200:
-        course = resp.json()
-        st.sidebar.success(f"Course found: {course['name']}")
+    base_url = f"https://{canvas_domain}"
+    headers = {"Authorization": f"Bearer {api_token}"}
 
-        st.sidebar.markdown(f"- **Start:** {course.get('start_at', 'None')}")
-        st.sidebar.markdown(f"- **End:** {course.get('end_at', 'None')}")
-        st.sidebar.markdown(f"- [View in Canvas](https://{search_domain}/courses/{course['id']})")
+    # --- Course ID Quick Search (BEFORE loading terms) ---
+    st.subheader("🔎 Quick Course ID Search")
+    course_id_search = st.text_input("Search by Course ID", placeholder="e.g., 12345")
+    if canvas_domain and api_token and course_id_search:
+        url = f"{base_url}/api/v1/courses/{course_id_search.strip()}"
+        resp = requests.get(url, headers=headers)
+        if resp.status_code == 200:
+            course = resp.json()
+            st.session_state['searched_course'] = course
 
-        mode = st.sidebar.radio("Participation Mode", ["Term Driven", "Date Driven"], key="search_mode")
-        start_date, end_date = None, None
+            st.markdown(f"### 📘 {course['name']} (ID: {course['id']})")
+            st.markdown(f"- **Start Date:** {course.get('start_at', 'None')}")
+            st.markdown(f"- **End Date:** {course.get('end_at', 'None')}")
+            st.markdown(f"- [Open in Canvas](https://{canvas_domain}/courses/{course['id']})")
 
-        if mode == "Date Driven":
-            start_date = st.sidebar.date_input("Start Date", key="search_start")
-            if st.sidebar.checkbox("No End Date", key="search_no_end"):
-                end_date = None
-            else:
-                end_date = st.sidebar.date_input("End Date", key="search_end")
+            mode = st.radio("Participation Mode", ["Term Driven", "Date Driven"], key="search_mode")
+            start_date = None
+            end_date = None
 
-        if st.sidebar.button("Apply Settings", key="search_apply"):
-            payload = {
-                "course": {
-                    "start_at": f"{start_date}T00:00:00Z" if start_date and mode == "Date Driven" else None,
-                    "end_at": f"{end_date}T23:59:59Z" if end_date and mode == "Date Driven" else None,
-                    "restrict_enrollments_to_course_dates": mode == "Date Driven"
-                },
-                "override_sis_stickiness": True
-            }
-            update_url = f"{base_url}/api/v1/courses/{course['id']}"
-            update_resp = requests.put(update_url, headers=headers, json=payload)
-            if update_resp.status_code == 200:
-                st.sidebar.success("✅ Course updated successfully.")
-            else:
-                st.sidebar.error("❌ Failed to update course.")
-    else:
-        st.sidebar.warning("Course not found or access denied.")
+            if mode == "Date Driven":
+                start_date = st.date_input("Start Date", key="search_start")
+                if st.checkbox("No End Date", key="search_no_end"):
+                    end_date = None
+                else:
+                    end_date = st.date_input("End Date", key="search_end")
 
-# === Term-based course management UI (unchanged core logic continues below) ===
-# You would now continue the rest of your original main tool code below this comment
-# That includes credential input, term selection, course filtering by term, bulk date/term changes, etc.
+            if st.button("Apply Settings", key="search_apply"):
+                payload = {
+                    "course": {
+                        "start_at": f"{start_date}T00:00:00Z" if start_date and mode == "Date Driven" else None,
+                        "end_at": f"{end_date}T23:59:59Z" if end_date and mode == "Date Driven" else None,
+                        "restrict_enrollments_to_course_dates": mode == "Date Driven"
+                    },
+                    "override_sis_stickiness": True
+                }
+                update_url = f"{base_url}/api/v1/courses/{course['id']}"
+                update_resp = requests.put(update_url, headers=headers, json=payload)
+                if update_resp.status_code == 200:
+                    st.success("✅ Course updated successfully.")
+                else:
+                    st.error("❌ Failed to update course.")
+        else:
+            st.warning("Course not found or access denied.")
 
-# This layout now supports BOTH the sidebar search and the term-driven workflows working in parallel.
-# Paste or re-enable your main report logic after this section.
+    if canvas_domain and api_token and account_id:
+        if st.button("🚀 Load Canvas Terms"):
+            terms, _ = _load_from_file_cache(TERMS_CACHE_FILE)
+            if not terms:
+                url = f"{base_url}/api/v1/accounts/{account_id}/terms?per_page=100"
+                terms = _paginated_get_from_api(url, headers)
+                _save_to_file_cache(TERMS_CACHE_FILE, terms)
+            st.session_state.fetched_terms = terms
+            st.session_state.data_loaded_and_terms_fetched = True
+            st.session_state.credentials_collapsed = True
+            st.rerun()
+
+# --- The rest of your term logic continues here as before (unchanged) ---
